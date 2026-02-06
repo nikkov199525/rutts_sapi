@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\ComReg.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\DllMain.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\Koi8r.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\ParamReader.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\RuTtsApi.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\RuTtsSapiEngine.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="src\WinUtil.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\ComReg.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\Exports.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\Guid.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\Koi8r.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\ParamReader.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\RuTtsApi.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\RuTtsSapiEngine.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\WinUtil.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="src\ru_tts.h"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
+</Project>
