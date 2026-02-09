@@ -28,7 +28,6 @@ Name: "custom"; Description: "Выборочная установка"; Flags: i
 Name: "core"; Description: "Core"; Types: full x64only x86only custom; Flags: fixed
 Name: "x64"; Description: "ruTTS SAPI (x64)"; Types: full x64only custom; Check: IsWin64
 Name: "x86"; Description: "ruTTS SAPI (x86)"; Types: full x86only custom
-Name: "dict"; Description: "Dictionary (rulex.db)"; Types: full custom
 Name: "docs"; Description: "Документация"; Types: full custom
 Name: "config"; Description: "Файл настроек (AppData)"; Types: full x64only x86only custom; Flags: fixed
 
@@ -41,7 +40,6 @@ Name: "{userappdata}\rutts"
 Source: "doc\*"; DestDir: "{app}\doc"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: docs
 Source: "ru_tts\lib\x64\*"; DestDir: "{app}\lib\x64"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: x64; Check: IsWin64
 Source: "ru_tts\lib\x32\*"; DestDir: "{app}\lib\x32"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: x86
-Source: "ru_tts\rulex.db"; DestDir: "{app}\lib"; Flags: ignoreversion; Components: dict
 Source: "rutts\*"; DestDir: "{userappdata}\rutts"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: config
 
 [Icons]
