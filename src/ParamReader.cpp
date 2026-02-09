@@ -1,4 +1,4 @@
-#include "ParamReader.h"
+﻿#include "ParamReader.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -22,27 +22,24 @@ std::wstring ParamReader::IniPath(){
 }
 
 static void WriteDefaultIni(const std::wstring& path){
-  try {
-    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
-  } catch(...) {}
+  try { std::filesystem::create_directories(std::filesystem::path(path).parent_path()); } catch(...) {}
 
-  // Minimal default ini. All other ru_tts settings stay at library defaults.
   const char* ini =
     "[Parameters]\r\n"
-    "# Adapter output sample rate (SAPI output format). ru_tts itself outputs 10000 Hz in this build.\r\n"
     "samples_per_sec = 10000\r\n"
+    "sapi_samples_per_sec = 22050\r\n"
     "\r\n"
-    "# Optional overrides for ru_tts.conf fields (only if specified).\r\n"
-    "# speech_rate = 120\r\n"
-    "# voice_pitch = 45\r\n"
-    "# intonation = 1\r\n"
-    "# general_gap_factor = 1.0\r\n"
-    "# comma_gap_factor = 1.0\r\n"
-    "# dot_gap_factor = 1.0\r\n"
-    "# semicolon_gap_factor = 1.0\r\n"
-    "# colon_gap_factor = 1.0\r\n"
-    "# question_gap_factor = 1.0\r\n"
-    "# exclamation_gap_factor = 1.0\r\n";
+    "comma_gap_factor = 100\r\n"
+    "dot_gap_factor = 100\r\n"
+    "semicolon_gap_factor = 100\r\n"
+    "colon_gap_factor = 100\r\n"
+    "question_gap_factor = 100\r\n"
+    "exclamation_gap_factor = 100\r\n"
+    "intonational_gap_factor = 100\r\n"
+    "\r\n"
+    "dec_sep_point = False\r\n"
+    "dec_sep_comma = True\r\n"
+    "use_alternative_voice = False\r\n";
 
   std::ofstream f(std::filesystem::path(path), std::ios::binary);
   if(!f) return;
@@ -54,14 +51,6 @@ static bool FileExists(const std::wstring& path){
   return (attrs != INVALID_FILE_ATTRIBUTES) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
 }
 
-static bool ReadDouble(const std::wstring& ini, const wchar_t* key, double& out){
-  wchar_t buf[64]{};
-  DWORD n = GetPrivateProfileStringW(L"Parameters", key, L"", buf, 64, ini.c_str());
-  if(n==0) return false;
-  out = wcstod(buf, nullptr);
-  return true;
-}
-
 static bool ReadInt(const std::wstring& ini, const wchar_t* key, int& out){
   wchar_t buf[64]{};
   DWORD n = GetPrivateProfileStringW(L"Parameters", key, L"", buf, 64, ini.c_str());
@@ -70,29 +59,59 @@ static bool ReadInt(const std::wstring& ini, const wchar_t* key, int& out){
   return true;
 }
 
+static bool ReadBool(const std::wstring& ini, const wchar_t* key, bool& out){
+  wchar_t buf[64]{};
+  DWORD n = GetPrivateProfileStringW(L"Parameters", key, L"", buf, 64, ini.c_str());
+  if(n==0) return false;
+
+  if(_wcsicmp(buf, L"true")==0 || _wcsicmp(buf, L"yes")==0) { out=true; return true; }
+  if(_wcsicmp(buf, L"false")==0 || _wcsicmp(buf, L"no")==0) { out=false; return true; }
+
+  out = (wcstol(buf,nullptr,10)!=0);
+  return true;
+}
+
+static int ClampInt(int v, int lo, int hi){
+  if(v < lo) return lo;
+  if(v > hi) return hi;
+  return v;
+}
+
 RuTtsParams ParamReader::Load(){
   RuTtsParams p{};
   std::wstring ini = IniPath();
   if(!FileExists(ini)) WriteDefaultIni(ini);
 
+  // legacy (оставляем как есть)
   p.samples_per_sec = GetPrivateProfileIntW(L"Parameters", L"samples_per_sec", 10000, ini.c_str());
-  if(p.samples_per_sec < 8000) p.samples_per_sec = 8000;
-  if(p.samples_per_sec > 48000) p.samples_per_sec = 48000;
 
-  if(ReadInt(ini, L"speech_rate", p.speech_rate)) p.has_speech_rate = true;
-  if(ReadInt(ini, L"voice_pitch", p.voice_pitch)) p.has_voice_pitch = true;
+  // SAPI output format
+  p.sapi_samples_per_sec = GetPrivateProfileIntW(L"Parameters", L"sapi_samples_per_sec", 22050, ini.c_str());
+  p.sapi_samples_per_sec = ClampInt(p.sapi_samples_per_sec, 8000, 48000);
 
-  int i=0;
-  if(ReadInt(ini, L"intonation", i)) { p.has_intonation=true; p.intonation = (i!=0); }
+  int v=0;
+  if(ReadInt(ini, L"speech_rate", v)) { p.has_speech_rate = true; p.speech_rate = v; }
+  if(ReadInt(ini, L"voice_pitch", v)) { p.has_voice_pitch = true; p.voice_pitch = v; }
+  if(ReadInt(ini, L"intonation", v)) { p.has_intonation = true; p.intonation = v; }
 
-  if(ReadDouble(ini, L"general_gap_factor", p.general_gap_factor)) p.has_general_gap_factor = true;
+  if(ReadInt(ini, L"general_gap_factor", v)) { p.has_general_gap_factor = true; p.general_gap_factor = v; }
+  if(ReadInt(ini, L"comma_gap_factor", v)) { p.has_comma_gap_factor = true; p.comma_gap_factor = v; }
+  if(ReadInt(ini, L"dot_gap_factor", v)) { p.has_dot_gap_factor = true; p.dot_gap_factor = v; }
+  if(ReadInt(ini, L"semicolon_gap_factor", v)) { p.has_semicolon_gap_factor = true; p.semicolon_gap_factor = v; }
+  if(ReadInt(ini, L"colon_gap_factor", v)) { p.has_colon_gap_factor = true; p.colon_gap_factor = v; }
+  if(ReadInt(ini, L"question_gap_factor", v)) { p.has_question_gap_factor = true; p.question_gap_factor = v; }
+  if(ReadInt(ini, L"exclamation_gap_factor", v)) { p.has_exclamation_gap_factor = true; p.exclamation_gap_factor = v; }
+  if(ReadInt(ini, L"intonational_gap_factor", v)) { p.has_intonational_gap_factor = true; p.intonational_gap_factor = v; }
 
-  if(ReadDouble(ini, L"comma_gap_factor", p.comma_gap_factor)) p.has_comma_gap_factor = true;
-  if(ReadDouble(ini, L"dot_gap_factor", p.dot_gap_factor)) p.has_dot_gap_factor = true;
-  if(ReadDouble(ini, L"semicolon_gap_factor", p.semicolon_gap_factor)) p.has_semicolon_gap_factor = true;
-  if(ReadDouble(ini, L"colon_gap_factor", p.colon_gap_factor)) p.has_colon_gap_factor = true;
-  if(ReadDouble(ini, L"question_gap_factor", p.question_gap_factor)) p.has_question_gap_factor = true;
-  if(ReadDouble(ini, L"exclamation_gap_factor", p.exclamation_gap_factor)) p.has_exclamation_gap_factor = true;
+  bool b=false;
+  int flags = 0;
+  bool anyFlag=false;
+
+  if(ReadBool(ini, L"dec_sep_point", b)) { if(b) flags |= DEC_SEP_POINT; anyFlag=true; }
+  if(ReadBool(ini, L"dec_sep_comma", b)) { if(b) flags |= DEC_SEP_COMMA; anyFlag=true; }
+  if(ReadBool(ini, L"use_alternative_voice", b)) { if(b) flags |= USE_ALTERNATIVE_VOICE; anyFlag=true; }
+
+  if(anyFlag) { p.has_flags = true; p.flags = flags; }
 
   return p;
 }
@@ -109,4 +128,7 @@ void ParamReader::ApplyToConf(const RuTtsParams& p, ru_tts_conf_t& conf){
   if(p.has_colon_gap_factor) conf.colon_gap_factor = p.colon_gap_factor;
   if(p.has_question_gap_factor) conf.question_gap_factor = p.question_gap_factor;
   if(p.has_exclamation_gap_factor) conf.exclamation_gap_factor = p.exclamation_gap_factor;
+  if(p.has_intonational_gap_factor) conf.intonational_gap_factor = p.intonational_gap_factor;
+
+  if(p.has_flags) conf.flags = p.flags;
 }
