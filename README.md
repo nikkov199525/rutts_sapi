@@ -15,7 +15,7 @@
 1. Клонировать репозиторий:
 
 ```bash
-git clone https://github.com/...
+git clone --recursive https://github.com/nikkov199525/rutts_sapi
 
 ```
 2. Перейдите в папку со склонированным репозиторием и подложите файлы вот так:
@@ -26,13 +26,13 @@ git clone https://github.com/...
 - `out\ru_tts\lib\x64\rulex.dll`
 - `out\ru_tts\rulex.db`
 
-3. После этого запустить сборку всего этого великолепия:
+3. После этого запустите сборку всего этого великолепия:
 
 ```bat
 build_release.bat
 ```
 
-4. Готовый установщик появится в:
+4. Готовый установщик появится в
 
 - `out\Output\rutts_sapi_YYYY.MM.DD_setup.exe`
 После этого устанавливаем и пользуемся.
