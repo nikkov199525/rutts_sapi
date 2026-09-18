@@ -19,25 +19,23 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayIcon={app}\rutts_configurator.exe
-VersionInfoVersion={#MyAppVersion}.0
-VersionInfoProductName={#MyAppName}
-VersionInfoCompany={#MyAppPublisher}
+
+[Languages]
+Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [Files]
-Source: "ru_tts\lib\x32\ru_tts.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
-Source: "ru_tts\lib\x32\rulex.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
-Source: "ru_tts\lib\x32\rutts_rulex.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
-Source: "ru_tts\lib\x32\rutts_sapi.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion regserver 32bit
-Source: "ru_tts\lib\x64\ru_tts.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
-Source: "ru_tts\lib\x64\rulex.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
-Source: "ru_tts\lib\x64\rutts_rulex.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
-Source: "ru_tts\lib\x64\rutts_sapi.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion regserver 64bit
+Source: "ru_tts\lib\x64\*"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
+Source: "ru_tts\lib\x32\*"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
 Source: "ru_tts\rutts_configurator.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ru_tts\rulex.db"; DestDir: "{app}"; Flags: ignoreversion
-Source: "ru_tts\doc\*"; DestDir: "{app}\doc"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\ruTTS Configurator"; Filename: "{app}\rutts_configurator.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\RuTTS configurator"; Filename: "{app}\rutts_configurator.exe"
 
 [Run]
-Filename: "{app}\rutts_configurator.exe"; Description: "Открыть конфигуратор ruTTS"; Flags: nowait postinstall skipifsilent
+Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\lib\x64\rutts_sapi.dll"""; StatusMsg: "Регистрация 64-битного SAPI-моста ruTTS..."; Flags: runhidden
+Filename: "{syswow64}\regsvr32.exe"; Parameters: "/s ""{app}\lib\x32\rutts_sapi.dll"""; StatusMsg: "Регистрация 32-битного SAPI-моста ruTTS..."; Flags: runhidden
+
+[UninstallRun]
+Filename: "{sys}\regsvr32.exe"; Parameters: "/s /u ""{app}\lib\x64\rutts_sapi.dll"""; Flags: runhidden; RunOnceId: "UnregisterRuttsSapi64"
+Filename: "{syswow64}\regsvr32.exe"; Parameters: "/s /u ""{app}\lib\x32\rutts_sapi.dll"""; Flags: runhidden; RunOnceId: "UnregisterRuttsSapi32"
