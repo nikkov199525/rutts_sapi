@@ -1,57 +1,43 @@
-  #define AppName "rutts_sapi"
-#define AppVersion "2026.10.02"
-#define AppPublisher "nikkov199525"
-#define InstallRootDir "rutts_sapi"
-#define RuTtsCLSID "{{D2F6B2A1-7F5E-4B9A-9B5E-2B7C5B63F1C9}}"
+#define MyAppName "ruTTS SAPI"
+#define MyAppVersion GetDateTimeString('yyyy.mm.dd', '', '')
+#define MyAppPublisher "ruTTS"
 
 [Setup]
-AppName={#AppName}
-AppVersion={#AppVersion}
-AppPublisher={#AppPublisher}
-DefaultDirName={pf}\{#InstallRootDir}
-DisableDirPage=no
+AppId={{7C535E29-541B-4CF6-B3DD-72E7A9689F31}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+DefaultDirName={autopf}\ruTTS
+DefaultGroupName=ruTTS
 DisableProgramGroupPage=yes
-DefaultGroupName={#AppName}
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
+OutputDir=Output
+OutputBaseFilename=rutts_sapi_{#MyAppVersion}_setup
 Compression=lzma2
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
-OutputBaseFilename={#AppName}_{#AppVersion}_setup
-LicenseFile=doc\README.txt
-[Types]
-Name: "full"; Description: "Полная установка"
-Name: "x64only"; Description: "Только x64"
-Name: "x86only"; Description: "Только x86"
-Name: "custom"; Description: "Выборочная установка"; Flags: iscustom
-
-[Components]
-Name: "core"; Description: "Core"; Types: full x64only x86only custom; Flags: fixed
-Name: "x64"; Description: "ruTTS SAPI (x64)"; Types: full x64only custom; Check: IsWin64
-Name: "x86"; Description: "ruTTS SAPI (x86)"; Types: full x86only custom
-Name: "docs"; Description: "Документация"; Types: full custom
-Name: "config"; Description: "Файл настроек (AppData)"; Types: full x64only x86only custom; Flags: fixed
-
-[Dirs]
-Name: "{app}\lib"
-Name: "{app}\doc"
-Name: "{userappdata}\rutts"
+WizardStyle=modern
+UninstallDisplayIcon={app}\rutts_configurator.exe
+VersionInfoVersion={#MyAppVersion}.0
+VersionInfoProductName={#MyAppName}
+VersionInfoCompany={#MyAppPublisher}
 
 [Files]
-Source: "doc\*"; DestDir: "{app}\doc"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: docs
-Source: "ru_tts\lib\x64\*"; DestDir: "{app}\lib\x64"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: x64; Check: IsWin64
-Source: "ru_tts\lib\x32\*"; DestDir: "{app}\lib\x32"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: x86
-Source: "rutts\*"; DestDir: "{userappdata}\rutts"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: config
+Source: "ru_tts\lib\x32\ru_tts.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
+Source: "ru_tts\lib\x32\rulex.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
+Source: "ru_tts\lib\x32\rutts_rulex.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion
+Source: "ru_tts\lib\x32\rutts_sapi.dll"; DestDir: "{app}\lib\x32"; Flags: ignoreversion regserver 32bit
+Source: "ru_tts\lib\x64\ru_tts.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
+Source: "ru_tts\lib\x64\rulex.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
+Source: "ru_tts\lib\x64\rutts_rulex.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion
+Source: "ru_tts\lib\x64\rutts_sapi.dll"; DestDir: "{app}\lib\x64"; Flags: ignoreversion regserver 64bit
+Source: "ru_tts\rutts_configurator.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ru_tts\rulex.db"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ru_tts\doc\*"; DestDir: "{app}\doc"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Открыть папку с документацией"; Filename: "explorer.exe"; Parameters: """{app}\doc"""; Components: docs
-Name: "{group}\Открыть файл настроек"; Filename: "{cmd}"; Parameters: "/c start """" ""{userappdata}\rutts\rutts.ini"""; WorkingDir: "{userappdata}\rutts"; Components: config
+Name: "{autoprograms}\ruTTS Configurator"; Filename: "{app}\rutts_configurator.exe"; WorkingDir: "{app}"
 
 [Run]
-Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\lib\x64\rutts_sapi.dll"""; Flags: runhidden; Components: x64; Check: IsWin64
-Filename: "{syswow64}\regsvr32.exe"; Parameters: "/s ""{app}\lib\x32\rutts_sapi.dll"""; Flags: runhidden; Components: x86; Check: IsWin64
-Filename: "{sys}\regsvr32.exe"; Parameters: "/s ""{app}\lib\x32\rutts_sapi.dll"""; Flags: runhidden; Components: x86; Check: not IsWin64
-
-[UninstallRun]
-Filename: "{sys}\regsvr32.exe"; Parameters: "/s /u ""{app}\lib\x64\rutts_sapi.dll"""; Flags: runhidden; Components: x64; Check: IsWin64
-Filename: "{syswow64}\regsvr32.exe"; Parameters: "/s /u ""{app}\lib\x32\rutts_sapi.dll"""; Flags: runhidden; Components: x86; Check: IsWin64
-Filename: "{sys}\regsvr32.exe"; Parameters: "/s /u ""{app}\lib\x32\rutts_sapi.dll"""; Flags: runhidden; Components: x86; Check: not IsWin64
+Filename: "{app}\rutts_configurator.exe"; Description: "Открыть конфигуратор ruTTS"; Flags: nowait postinstall skipifsilent

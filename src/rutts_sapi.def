@@ -1,0 +1,9 @@
+; COM in-proc server exports for the mingw/gcc build.
+; MSVC provides these through #pragma comment(linker,"/export:...,PRIVATE") in
+; Exports.h; mingw/lld takes them from this module-definition file instead.
+LIBRARY rutts_sapi
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE
+    DllRegisterServer   PRIVATE
+    DllUnregisterServer PRIVATE

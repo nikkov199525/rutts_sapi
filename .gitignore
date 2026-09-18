@@ -1,0 +1,10 @@
+# build artifacts
+/build/
+/.vs/
+*.obj
+*.pdb
+*.exp
+*.lib
+# committed build output tree, keep only the installer script
+/out/*
+!/out/rutts_sapi.iss

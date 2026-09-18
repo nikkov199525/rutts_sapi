@@ -3,23 +3,46 @@
 #include <string>
 #include "ru_tts.h"
 
+enum class UnicodeNormalizationForm {
+  NFC,
+  NFKC,
+  NFD,
+  NFKD
+};
+
+enum class InterpolationAlgorithm {
+  Linear,
+  ZeroOrderHold
+};
+
 struct RuTtsParams {
-  // ВАЖНО: это частота СИНТЕЗАТОРА (уходит в confT).
-  // Должна реально влиять на "поток/питч" внутри ru_tts.dll, как в первой версии.
+  // 0 - не использовать rulex, 1 - использовать rulex
+  bool use_rulex = true;
+  // 0 - основной (мужской) голос, 1 - альтернативный (женский) голос
+  bool use_alternative_voice = false;
+  // 0 - без доп. ускорения, 1 - включить ускорение (x2)
+  bool use_rate_boost = false;
+  // Старый (линейный) алгоритм изменения скорости в ядре. По умолчанию ядро
+  // использует адаптивный powf-кроссфейд; флаг USE_LEGACY_RATE_ALGO возвращает
+  // прежнее линейное поведение. Понимает только новое ядро ru_tts.dll.
+  bool use_legacy_rate_algo = false;
+
+  // Исходное имя параметра проекта: частота дискретизации выходного потока.
   int samples_per_sec = 10000;
 
-  // Отдельно: частота ВЫХОДА SAPI (качество/совместимость).
-  int sapi_samples_per_sec = 22050;
+  // Множитель апсемплинга: 1/2/4.
+  int interpolation_multiplier = 1;
+  // Алгоритм интерполяции.
+  InterpolationAlgorithm interpolation_algorithm = InterpolationAlgorithm::Linear;
+  // Размер исходного буфера ru_tts_transfer (в байтах).
+  int wave_buffer_size = 4096;
+  // Тишина в начале/конце синтеза (мс).
+  int silence_at_begin = 0;
+  int silence_at_end = 0;
 
-  // Optional overrides for ru_tts_conf_t
-  bool has_speech_rate = false;
-  int speech_rate = 0;
-
-  bool has_voice_pitch = false;
-  int voice_pitch = 0;
-
-  bool has_intonation = false;
-  int intonation = 0;
+  // Эффективная выходная частота.
+  // Вычисляется как samples_per_sec * interpolation_multiplier.
+  int output_sample_rate = 10000;
 
   bool has_general_gap_factor = false;
   int general_gap_factor = 0;
@@ -40,8 +63,13 @@ struct RuTtsParams {
   bool has_intonational_gap_factor = false;
   int intonational_gap_factor = 0;
 
-  bool has_flags = false;
-  int flags = 0;
+  bool dec_sep_point = false;
+  bool dec_sep_comma = true;
+  bool has_intonation = false;
+  int intonation = 0;
+
+  bool use_unicode_normalization = false;
+  UnicodeNormalizationForm unicode_normalization_form = UnicodeNormalizationForm::NFC;
 };
 
 class ParamReader {
