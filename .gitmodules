@@ -1,0 +1,4 @@
+[submodule "libsamplerate/src"]
+	path = libsamplerate/src
+	url = https://github.com/nikkov199525/libsamplerate
+	branch = sapi
