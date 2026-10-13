@@ -1,4 +1,17 @@
-[submodule "libsamplerate/src"]
-	path = libsamplerate/src
+[submodule "external/ru_tts"]
+	path = external/ru_tts
+	url = https://github.com/nikkov199525/ru_tts
+	branch = main
+[submodule "external/rulex"]
+	path = external/rulex
+	url = https://github.com/poretsky/rulex
+[submodule "external/lmdb"]
+	path = external/lmdb
+	url = https://github.com/LMDB/lmdb
+[submodule "external/pcre2"]
+	path = external/pcre2
+	url = https://github.com/PCRE2Project/pcre2
+[submodule "external/libsamplerate"]
+	path = external/libsamplerate
 	url = https://github.com/nikkov199525/libsamplerate
 	branch = sapi

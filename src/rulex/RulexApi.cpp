@@ -32,10 +32,9 @@ bool IsWordChar(wchar_t ch) {
     return IsCyrLetter(ch) || IsAccent(ch);
 }
 
-// rulexdb_open ждёт путь к базе в UTF-8: текущая rulex.dll пропускает свои
-// внутренние access()/проверки файла через шим UTF-8 -> wide (см. в
-// NVDA-драйвере access_utf8.c), и его питон-драйвер тоже передаёт
-// db_path.encode("utf-8"). Прежняя конвертация в ACP молча возвращала пусто для
+// rulexdb_open ждёт путь к базе в UTF-8: rulex.dll собирается с шимом
+// access_utf8.c, который пропускает её внутренние access()/проверки файла через
+// UTF-8 -> wide (так же, как в NVDA-драйвере ru_tts). Прежняя конвертация в ACP молча возвращала пусто для
 // любого не-ASCII пути (кириллица в имени пользователя, локализованная папка)
 // или когда 8.3-имена отключены -- тогда кандидат пропускался и rulex выглядел
 // «невидимым». UTF-8 байт-в-байт совпадает с ASCII, поэтому обычные пути не
@@ -127,29 +126,11 @@ void AddCandidate(std::vector<RulexPaths>& out, const std::filesystem::path& dll
 void AddCandidatesFromArchDir(std::vector<RulexPaths>& candidates, const std::filesystem::path& archDir) {
     if (archDir.empty()) return;
 
-    // Installer layout (source of truth): the setup drops rulex.dll next to the
-    // SAPI/bridge DLLs in {app}\lib\<arch>\, and rulex.db in {app}\ -- i.e. two
-    // levels up from the DLLs. See installer\rutts_sapi.iss.
-    AddCandidate(candidates, archDir / L"rulex.dll", archDir.parent_path().parent_path() / L"rulex.db");
-
-#if defined(_WIN64)
-    constexpr wchar_t kArchName[] = L"x64";
-#else
-    constexpr wchar_t kArchName[] = L"x32";
-#endif
-
-    // Dev layout fallback (for builds from out\\<arch>\\Release).
-    std::filesystem::path root = archDir;
-    for (int i = 0; i < 6 && !root.empty(); ++i) {
-        AddCandidate(
-            candidates,
-            root / L"ru_tts" / L"lib" / kArchName / L"rulex.dll",
-            root / L"ru_tts" / L"rulex.db");
-
-        const std::filesystem::path next = root.parent_path();
-        if (next == root) break;
-        root = next;
-    }
+    // Build tree: rulex.db lies next to the DLLs.
+    AddCandidate(candidates, archDir / L"rulex.dll", archDir / L"rulex.db");
+    // Installed layout: x86 and x64 share one database next to their folders
+    // (the file is the same for both, 32-bit rulex is built with MDB_VL32).
+    AddCandidate(candidates, archDir / L"rulex.dll", archDir.parent_path() / L"rulex.db");
 }
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;

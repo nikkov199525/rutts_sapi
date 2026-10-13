@@ -77,4 +77,6 @@ public:
   static RuTtsParams Load();
   static void ApplyToConf(const RuTtsParams& p, ru_tts_conf_t& conf);
   static std::wstring IniPath();
+  // Журнал вызовов Speak; пишется, только если файл уже создан.
+  static std::wstring TracePath();
 };

@@ -226,10 +226,22 @@ z = зэт
 } // namespace
 
 std::wstring ParamReader::IniPath() {
+  // RUTTS_CONFIG_DIR подменяет папку настроек: так тесты не трогают настройки
+  // пользователя.
+  wchar_t overrideDir[MAX_PATH]{};
+  const DWORD n = GetEnvironmentVariableW(L"RUTTS_CONFIG_DIR", overrideDir, MAX_PATH);
+  if (n > 0 && n < MAX_PATH) {
+    return (std::filesystem::path(overrideDir) / L"rutts.ini").wstring();
+  }
+
   std::filesystem::path base(AppDataDir());
   base /= L"rutts";
   base /= L"rutts.ini";
   return base.wstring();
+}
+
+std::wstring ParamReader::TracePath() {
+  return (std::filesystem::path(IniPath()).parent_path() / L"sapi_trace.log").wstring();
 }
 
 RuTtsParams ParamReader::Load() {

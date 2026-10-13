@@ -16,6 +16,10 @@ class ClassFactory final : public IClassFactory {
     volatile LONG m_ref = 1;
 
 public:
+    // Живая фабрика тоже держит DLL: иначе DllCanUnloadNow разрешил бы выгрузку
+    // между CoGetClassObject и CreateInstance.
+    ClassFactory() { g_objectCount.fetch_add(1, std::memory_order_relaxed); }
+    ~ClassFactory() { g_objectCount.fetch_sub(1, std::memory_order_relaxed); }
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
         *ppv = nullptr;

@@ -1,10 +1,10 @@
-# build artifacts
+# Каталоги сборки
 /build/
+/out/
 /.vs/
-*.obj
-*.pdb
-*.exp
-*.lib
-# committed build output tree, keep only the installer script
-/out/*
-!/out/rutts_sapi.iss
+
+# Готовые установщики
+*_setup.exe
+
+# Файлы, отодвинутые установщиком, когда библиотека была занята
+*.old

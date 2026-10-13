@@ -32,8 +32,14 @@ struct EngineContext {
     ISpTTSEngineSite* site = nullptr;
 
     int inRate = 10000;
+    // Частота и разрядность потока, который хост попросил в Speak.
     int outRate = 10000;
+    int outBits = 16;
+    // Итоговое усиление -- громкость клиента (SetVolume) на громкость фрагмента
+    // (<volume level>): SAPI велит их перемножать.
     int gainPercent = 100;
+    int baseVolume = 100;
+    int segmentVolume = 100;
     int interpolationAlgorithm = SRC_LINEAR;
     CallbackInputFormat inputFormat = CallbackInputFormat::Raw8BitBytes;
 
@@ -42,6 +48,12 @@ struct EngineContext {
     std::vector<float> inFloat;
     std::vector<float> outFloat;
     std::vector<int16_t> silence16;
+    std::vector<uint8_t> wave8;
+
+    // Последние сэмплы звука, придержанные до того, как станет ясно, хвост ли это
+    // (см. WritePcmSamples и FinishSound). tailLen -- длина затухания в сэмплах.
+    std::vector<int16_t> tail;
+    size_t tailLen = 0;
 
     // Клиент снял фразу (ABORT/SKIP/SP_AUDIO_STOPPED). Раз поднятый флаг гасит
     // всю дальнейшую запись в site до конца этого вызова Speak.
@@ -59,11 +71,10 @@ struct EngineContext {
     std::vector<uint8_t> capture;
     bool capturing = false;
 
-    // Клиент попросил сменить скорость посреди фразы (SPVES_RATE). Значение
-    // применяется на границе сегмента: перестраивать conf внутри transfer
-    // нельзя.
-    bool rateDirty = false;
-    long pendingRateAdj = 0;
+    // Скорость клиента (SetRate). К ней прибавляется скорость фрагмента
+    // (<rate>), а conf перестраивается на границе сегмента: внутри transfer его
+    // трогать нельзя. Поэтому SPVES_RATE посреди фразы здесь просто запоминается.
+    long baseRateAdj = 0;
 };
 
 // SP_AUDIO_STOPPED -- это КОД УСПЕХА (0x00045065), а не ошибка: FAILED() его не
@@ -76,11 +87,15 @@ struct EngineContext {
 
 static int ClampInt(int v, int lo, int hi);
 
+static void UpdateGain(EngineContext* ctx) {
+    ctx->gainPercent = ClampInt(ctx->baseVolume * ctx->segmentVolume / 100, 0, 100);
+}
+
 // Снимает запросы клиента, приходящие ПОСРЕДИ фразы. Возвращает false, когда
 // синтез надо прекратить (отмена/пропуск). Громкость применяется на лету --
 // усиление берётся в колбэке для следующих кусков. Скорость ru_tts внутри
-// одного transfer сменить нельзя, поэтому бит SPVES_RATE просто снимается
-// чтением GetRate, чтобы SAPI не поднимала его снова и снова.
+// одного transfer сменить нельзя: новое значение запоминается до следующего
+// сегмента, а чтение GetRate снимает бит, чтобы SAPI не поднимала его снова.
 static bool CheckSapiActions(EngineContext* ctx) {
     if (!ctx || !ctx->site || ctx->sapiStop) return false;
 
@@ -102,15 +117,15 @@ static bool CheckSapiActions(EngineContext* ctx) {
     if (actions & SPVES_VOLUME) {
         USHORT volume = 100;
         if (SUCCEEDED(ctx->site->GetVolume(&volume))) {
-            ctx->gainPercent = ClampInt(static_cast<int>(volume), 0, 100);
+            ctx->baseVolume = ClampInt(static_cast<int>(volume), 0, 100);
+            UpdateGain(ctx);
         }
     }
 
     if (actions & SPVES_RATE) {
         long rateAdj = 0;
         if (SUCCEEDED(ctx->site->GetRate(&rateAdj))) {
-            ctx->pendingRateAdj = rateAdj;
-            ctx->rateDirty = true;
+            ctx->baseRateAdj = rateAdj;
         }
     }
 
@@ -128,16 +143,13 @@ static void ToLowerInplace(std::wstring& s) {
     CharLowerBuffW(s.data(), (DWORD)s.size());
 }
 
-static std::wstring StripAngleTags(const std::wstring& in) {
-    std::wstring out;
-    out.reserve(in.size());
-    bool inTag = false;
-    for (wchar_t ch : in) {
-        if (ch == L'<') { inTag = true; continue; }
-        if (ch == L'>') { inTag = false; continue; }
-        if (!inTag) out.push_back(ch);
-    }
-    return out;
+// Разметку разбирает сама SAPI, и до движка теги не доходят: '<' и '>' в тексте
+// фрагмента -- это настоящие знаки ("a < b", код, &lt; из XML). Раньше они
+// считались тегом, и всё от '<' до '>' или до конца фразы молча пропадало.
+// Читать их ядро не умеет, поэтому они просто становятся пробелами.
+static std::wstring BlankAngleBrackets(std::wstring s) {
+    for (auto& ch : s) if (ch == L'<' || ch == L'>') ch = L' ';
+    return s;
 }
 
 static bool IsIgnorableFormatChar(wchar_t ch) {
@@ -194,7 +206,7 @@ static void CollapseSpacesInplace(std::wstring& s) {
 }
 
 static std::wstring SanitizeText(std::wstring s) {
-    s = StripAngleTags(s);
+    s = BlankAngleBrackets(std::move(s));
     s = RemoveControlChars(s);
 
 
@@ -269,21 +281,21 @@ static bool CanEncodeKoi8r(wchar_t ch) {
     const wchar_t w[2] = { ch, 0 };
     int n = WideCharToMultiByte(20866, WC_NO_BEST_FIT_CHARS, w, 1, &out, 1, "?", &usedDefault);
     if (n != 1) return false;
-    if (ch == L'?') return true;        // '?' РґРѕРїСѓСЃС‚РёРј
-    return usedDefault == FALSE;        // РµСЃР»Рё Р·Р°РјРµРЅРёР»Рё defaultChar -> РЅРµ РєРѕРґРёСЂСѓРµС‚СЃСЏ
+    if (ch == L'?') return true;        // '?' допустим
+    return usedDefault == FALSE;        // если заменили defaultChar -> не кодируется
 }
 
 static void NormalizeForKoi8rInplace(std::wstring& s) {
     for (auto& ch : s) {
         const unsigned u = (unsigned)ch;
 
-        // Р’СЃРµ РІРёРґС‹ С‚РёСЂРµ/РјРёРЅСѓСЃРѕРІ -> ASCII '-'
+        // Все виды тире/минусов -> ASCII '-'
         if (u == 0x2014u || u == 0x2013u || u == 0x2212u || u == 0x2012u || u == 0x2011u) {
             ch = L'-';
             continue;
         }
 
-        // "СѓРјРЅС‹Рµ" РєР°РІС‹С‡РєРё -> РѕР±С‹С‡РЅС‹Рµ
+        // "умные" кавычки -> обычные
         if (u == 0x201Cu || u == 0x201Du || u == 0x00ABu || u == 0x00BBu) {
             ch = L'"';
             continue;
@@ -293,7 +305,7 @@ static void NormalizeForKoi8rInplace(std::wstring& s) {
             continue;
         }
 
-        // РІСЃС‘, С‡С‚Рѕ KOI8-R РЅРµ СѓРјРµРµС‚ -> РїСЂРѕР±РµР»
+        // всё, что KOI8-R не умеет -> пробел
         if (!CanEncodeKoi8r(ch)) {
             ch = L' ';
         }
@@ -316,19 +328,43 @@ static std::wstring SpeakSpellOut(const std::wstring& s,
     return out;
 }
 
+// В [Characters] ключом может быть не только буква, но и сочетание ("sh",
+// "ee"). Совпадения ищутся от самого длинного ключа, иначе "e = е" срабатывало
+// бы раньше "ee = и" и сочетание бы не дожило.
+static std::vector<std::pair<std::wstring, std::wstring>> SortCharMap(
+    const std::unordered_map<std::wstring, std::wstring>& charMap)
+{
+    std::vector<std::pair<std::wstring, std::wstring>> sorted(charMap.begin(), charMap.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+        if (a.first.size() != b.first.size()) return a.first.size() > b.first.size();
+        return a.first < b.first;
+    });
+    return sorted;
+}
+
 static std::wstring ApplyCharMap(const std::wstring& s,
-                                const std::unordered_map<std::wstring, std::wstring>& charMap)
+                                const std::vector<std::pair<std::wstring, std::wstring>>& charMap)
 {
     if (charMap.empty()) return s;
+
+    // Ключи в ini уже приведены к нижнему регистру, поэтому ищем по копии текста.
+    std::wstring lower = s;
+    ToLowerInplace(lower);
 
     std::wstring out;
     out.reserve(s.size());
 
-    for (wchar_t ch : s) {
-        std::wstring key(1, Lower1(ch));
-        auto it = charMap.find(key);
-        if (it != charMap.end()) out += it->second;
-        else out.push_back(ch);
+    for (size_t i = 0; i < s.size();) {
+        bool matched = false;
+        for (const auto& pair : charMap) {
+            if (pair.first.empty() || pair.first.size() > s.size() - i) continue;
+            if (lower.compare(i, pair.first.size(), pair.first) != 0) continue;
+            out += pair.second;
+            i += pair.first.size();
+            matched = true;
+            break;
+        }
+        if (!matched) out.push_back(s[i++]);
     }
     return out;
 }
@@ -502,6 +538,8 @@ static std::wstring ReplaceAccentInRussianWords(const std::wstring& s) {
     return t;
 }
 
+constexpr size_t kSiteWriteChunk = 4096;
+
 static int WriteAllToSite(EngineContext* ctx, const void* data, size_t bytes) {
     if (!ctx || !ctx->site) return 1;
     if (bytes == 0) return 0;
@@ -523,9 +561,9 @@ static int WriteAllToSite(EngineContext* ctx, const void* data, size_t bytes) {
     while (left > 0) {
         if (!CheckSapiActions(ctx)) return 1;
 
-        ULONG ask = (left > static_cast<size_t>(std::numeric_limits<ULONG>::max()))
-            ? std::numeric_limits<ULONG>::max()
-            : static_cast<ULONG>(left);
+        // Порциями: один огромный site->Write мог бы надолго заблокироваться, и
+        // снятие речи между порциями не проверялось бы.
+        const ULONG ask = static_cast<ULONG>((std::min)(left, kSiteWriteChunk));
 
         ULONG written = 0;
         HRESULT hr = ctx->site->Write(ptr, ask, &written);
@@ -572,7 +610,7 @@ static int EndCaptureAndWrite(EngineContext* ctx) {
     if (!ctx) return 1;
     ctx->capturing = false;
     const size_t total = ctx->capture.size();
-    constexpr size_t kChunk = 4096;
+    constexpr size_t kChunk = kSiteWriteChunk;
     size_t offset = 0;
     while (offset < total) {
         const size_t take = (total - offset < kChunk) ? (total - offset) : kChunk;
@@ -594,8 +632,8 @@ static int EndCaptureAndWrite(EngineContext* ctx) {
 // не знает, докуда дочитано.
 static bool QueueBookmarkEvent(EngineContext* ctx, const std::wstring& name, std::uint64_t audioOffset) {
     if (!ctx || !ctx->site) return false;
-    // "Смещение обязано приходиться на границу сэмпла." PCM16 моно -- 2 байта.
-    audioOffset &= ~static_cast<std::uint64_t>(1);
+    // "Смещение обязано приходиться на границу сэмпла": 2 байта у PCM16, 1 у PCM8.
+    if (ctx->outBits == 16) audioOffset &= ~static_cast<std::uint64_t>(1);
 
     // lParam обязан быть НОЛЬ-ТЕРМИНИРОВАННОЙ копией имени: SAPI читает строку по
     // указателю прямо внутри AddEvents, а текст фрагмента в её списке не
@@ -620,6 +658,13 @@ static bool QueueBookmarkEvent(EngineContext* ctx, const std::wstring& name, std
     return SUCCEEDED(ctx->site->AddEvents(&event, 1));
 }
 
+// Ядро обрывает звук посреди волны: последний сэмпл фразы бывает далеко от
+// нуля, а следом сразу тишина. Такая ступенька слышна щелчком на конце каждой
+// реплики. В JAWS реплик особенно много -- отдельная фраза на каждую клавишу и
+// каждый фокус, -- отсюда "артефакты на концах". Последние миллисекунды звука
+// ядра поэтому плавно гасятся до нуля.
+constexpr int kFadeOutMs = 5;
+
 static void FreeAudioPipeline(EngineContext* ctx) {
     if (!ctx) return;
     if (ctx->converter) {
@@ -630,6 +675,7 @@ static void FreeAudioPipeline(EngineContext* ctx) {
     ctx->inFloat.clear();
     ctx->outFloat.clear();
     ctx->silence16.clear();
+    ctx->tail.clear();
     ctx->capture.clear();
     ctx->capturing = false;
 }
@@ -643,6 +689,7 @@ static bool InitAudioPipeline(EngineContext* ctx) {
     if (ctx->outRate > 192000) ctx->outRate = 192000;
     if (ctx->gainPercent < 0) ctx->gainPercent = 0;
     if (ctx->gainPercent > 100) ctx->gainPercent = 100;
+    ctx->tailLen = static_cast<size_t>(ctx->outRate) * kFadeOutMs / 1000;
 
     if (ctx->inRate == ctx->outRate) {
         return true;
@@ -663,11 +710,68 @@ static int16_t ApplyGain(int16_t sample, int gainPercent) {
     return static_cast<int16_t>(scaled);
 }
 
+// Внутри звук идёт как PCM16; если хост попросил 8 бит, он понижается здесь.
+static int EmitPcmSamples(EngineContext* ctx, const int16_t* samples, size_t count) {
+    if (!ctx || !samples || count == 0) return 0;
+    if (ctx->outBits != 8) return WriteAllToSite(ctx, samples, count * sizeof(int16_t));
+
+    ctx->wave8.resize(count);
+    for (size_t i = 0; i < count; ++i) {
+        // 8-битный PCM в WAVE -- беззнаковый, с нулём в 128. Округление, а не
+        // отбрасывание младшего байта: у пересчитанного звука тот половину
+        // значений уводил бы вниз. Ровные 8-битные отсчёты ядра не страдают.
+        const int rounded = (static_cast<int>(samples[i]) + 128) >> 8;
+        ctx->wave8[i] = static_cast<uint8_t>(ClampInt(rounded, -128, 127) + 128);
+    }
+    return WriteAllToSite(ctx, ctx->wave8.data(), count);
+}
+
+// Отдаёт звук, но последние tailLen сэмплов придерживает: пока ядро не
+// закончило, неизвестно, хвост это или середина фразы. Отдаст или погасит их
+// следующий кусок либо FinishSound.
+static int WritePcmSamples(EngineContext* ctx, const int16_t* samples, size_t count) {
+    if (!ctx || !samples || count == 0) return 0;
+    if (ctx->tailLen == 0) return EmitPcmSamples(ctx, samples, count);
+
+    std::vector<int16_t>& tail = ctx->tail;
+    if (count >= ctx->tailLen) {
+        if (EmitPcmSamples(ctx, tail.data(), tail.size()) != 0) return 1;
+        const size_t ready = count - ctx->tailLen;
+        if (EmitPcmSamples(ctx, samples, ready) != 0) return 1;
+        tail.assign(samples + ready, samples + count);
+        return 0;
+    }
+
+    tail.insert(tail.end(), samples, samples + count);
+    if (tail.size() <= ctx->tailLen) return 0;
+    const size_t ready = tail.size() - ctx->tailLen;
+    if (EmitPcmSamples(ctx, tail.data(), ready) != 0) return 1;
+    tail.erase(tail.begin(), tail.begin() + static_cast<std::ptrdiff_t>(ready));
+    return 0;
+}
+
+// Звук кончился (конец transfer ядра или паузы): придержанный хвост гасится
+// половиной косинуса до нуля и отдаётся. Через закладки придержанного сегмента
+// хвост тоже проходит до измерения его длины, поэтому смещения событий верны.
+static int FinishSound(EngineContext* ctx) {
+    if (!ctx) return 1;
+    std::vector<int16_t>& tail = ctx->tail;
+    const size_t n = tail.size();
+    constexpr double kPi = 3.14159265358979323846;
+    for (size_t i = 0; i < n; ++i) {
+        const double gain = 0.5 * (1.0 + std::cos(kPi * static_cast<double>(i + 1) / static_cast<double>(n)));
+        tail[i] = static_cast<int16_t>(std::lround(tail[i] * gain));
+    }
+    const int result = EmitPcmSamples(ctx, tail.data(), n);
+    tail.clear();
+    return result;
+}
+
 static int ProcessAndWriteSamples(EngineContext* ctx, const int16_t* inSamples, size_t inCount) {
     if (!ctx || !ctx->site || !inSamples || inCount == 0) return 0;
 
     if (!ctx->converter || ctx->inRate == ctx->outRate) {
-        return WriteAllToSite(ctx, inSamples, inCount * sizeof(int16_t));
+        return WritePcmSamples(ctx, inSamples, inCount);
     }
 
     if (inCount > static_cast<size_t>(std::numeric_limits<int>::max())) return 1;
@@ -700,7 +804,7 @@ static int ProcessAndWriteSamples(EngineContext* ctx, const int16_t* inSamples, 
     const size_t outCount = static_cast<size_t>(srcData.output_frames_gen);
     ctx->wave16.resize(outCount);
     src_float_to_short_array(ctx->outFloat.data(), ctx->wave16.data(), static_cast<int>(outCount));
-    return WriteAllToSite(ctx, ctx->wave16.data(), outCount * sizeof(int16_t));
+    return WritePcmSamples(ctx, ctx->wave16.data(), outCount);
 }
 
 static int FlushResampler(EngineContext* ctx) {
@@ -710,9 +814,13 @@ static int FlushResampler(EngineContext* ctx) {
     if (!src_is_valid_ratio(ratio)) return 1;
 
     ctx->outFloat.resize(512);
+    // src_process отвергает data_in == nullptr (SRC_ERR_BAD_DATA_PTR) даже при
+    // нуле входных кадров -- а ошибка здесь обрывает фразу и выбрасывает звук,
+    // придержанный ради закладок. Поэтому нужен настоящий, хоть и пустой, буфер.
+    if (ctx->inFloat.empty()) ctx->inFloat.resize(1);
     while (true) {
         SRC_DATA srcData{};
-        srcData.data_in = nullptr;
+        srcData.data_in = ctx->inFloat.data();
         srcData.input_frames = 0;
         srcData.data_out = ctx->outFloat.data();
         srcData.output_frames = static_cast<long>(ctx->outFloat.size());
@@ -726,7 +834,7 @@ static int FlushResampler(EngineContext* ctx) {
         const size_t outCount = static_cast<size_t>(srcData.output_frames_gen);
         ctx->wave16.resize(outCount);
         src_float_to_short_array(ctx->outFloat.data(), ctx->wave16.data(), static_cast<int>(outCount));
-        if (WriteAllToSite(ctx, ctx->wave16.data(), outCount * sizeof(int16_t)) != 0) return 1;
+        if (WritePcmSamples(ctx, ctx->wave16.data(), outCount) != 0) return 1;
 
         if (srcData.output_frames_gen < srcData.output_frames) break;
     }
@@ -756,10 +864,11 @@ static int WriteSilenceMs(EngineContext* ctx, int milliseconds) {
 
     while (totalSamples > 0) {
         const size_t n = (totalSamples < chunkSamples) ? totalSamples : chunkSamples;
-        if (WriteAllToSite(ctx, ctx->silence16.data(), n * sizeof(int16_t)) != 0) return 1;
+        if (WritePcmSamples(ctx, ctx->silence16.data(), n) != 0) return 1;
         totalSamples -= n;
     }
-    return 0;
+    // Нули гасить незачем, но придерживать их дольше паузы тоже нельзя.
+    return FinishSound(ctx);
 }
 
 static int __cdecl SapiConsumer16(void* buffer, size_t size, void* user_data) {
@@ -829,10 +938,37 @@ struct SpeechMark {
     size_t textIndex = 0;
 };
 
+// Состояние голоса из XML фрагмента (SPVSTATE). JAWS задаёт им скорость,
+// громкость и высоту КАЖДОЙ фразы (<rate AbsSpeed>, <volume level>,
+// <pitch AbsMiddle>), а высоту ещё и отдельным словам -- заглавным. SAPI
+// требует складывать скорость фрагмента со скоростью клиента (GetRate) и
+// перемножать громкости; без этого скорость в JAWS не менялась вовсе.
+struct VoiceState {
+    long rateAdj = 0;
+    int volume = 100;
+    long pitchMiddle = 0;
+    long pitchRange = 0;
+
+    bool operator==(const VoiceState& o) const {
+        return rateAdj == o.rateAdj && volume == o.volume &&
+            pitchMiddle == o.pitchMiddle && pitchRange == o.pitchRange;
+    }
+};
+
+static VoiceState VoiceStateOf(const SPVSTATE& state) {
+    VoiceState v;
+    v.rateAdj = state.RateAdj;
+    v.volume = static_cast<int>((state.Volume > 100) ? 100 : state.Volume);
+    v.pitchMiddle = state.PitchAdj.MiddleAdj;
+    v.pitchRange = state.PitchAdj.RangeAdj;
+    return v;
+}
+
 struct SpeechSegment {
     SpeechSegmentKind kind = SpeechSegmentKind::Text;
     std::wstring text;
     bool singleMode = false;
+    VoiceState voice;
     std::uint64_t sourceEnd = 0;
     int silenceMs = 0;
     std::vector<SpeechMark> marks;
@@ -862,17 +998,27 @@ static bool ClingsToWordAfter(wchar_t ch) {
 }
 
 // Текстовый фрагмент присоединяется к предыдущему текстовому сегменту того же
-// режима, а не заводит новый: иначе каждое слово ушло бы в ядро отдельным
-// transfer и интонация рассыпалась бы. Если между фрагментами в исходном тексте
-// был разрыв смещений -- значит там была граница слова, и её надо вернуть.
+// режима и состояния голоса, а не заводит новый: иначе каждое слово ушло бы в
+// ядро отдельным transfer и интонация рассыпалась бы. Сменилось состояние --
+// новый сегмент: скорость и высоту ядру задают на весь transfer. Если между
+// фрагментами в исходном тексте был разрыв смещений -- значит там была граница
+// слова, и её надо вернуть.
 static void AppendTextSegment(
     std::vector<SpeechSegment>& segments,
     const std::wstring& text,
     bool singleMode,
+    const VoiceState& voice,
     ULONG sourceOffset) {
     if (text.empty()) return;
+    // Сегмент из одних закладок (текста ещё нет) состояния не имеет -- берёт
+    // состояние первого текста.
     if (!segments.empty() && segments.back().kind == SpeechSegmentKind::Text &&
-        segments.back().singleMode == singleMode) {
+        segments.back().text.empty()) {
+        segments.back().singleMode = singleMode;
+        segments.back().voice = voice;
+    }
+    if (!segments.empty() && segments.back().kind == SpeechSegmentKind::Text &&
+        segments.back().singleMode == singleMode && segments.back().voice == voice) {
         SpeechSegment& segment = segments.back();
         const std::uint64_t offset = sourceOffset;
         const bool sourceCharactersOmitted = offset > segment.sourceEnd;
@@ -893,6 +1039,7 @@ static void AppendTextSegment(
     segment.kind = SpeechSegmentKind::Text;
     segment.text = text;
     segment.singleMode = singleMode;
+    segment.voice = voice;
     segment.sourceEnd = static_cast<std::uint64_t>(sourceOffset) + text.size();
     segments.push_back(std::move(segment));
 }
@@ -968,13 +1115,13 @@ static std::uint64_t MarkAudioOffset(std::uint64_t segmentStart,
 
 // Полная подготовка текста одного сегмента к синтезу (без koi8 -- он в Speak).
 // В посимвольном режиме имена букв из [SingleCharacters] подставляются ДО
-// чистки: иначе StripAngleTags внутри SanitizeText съел бы одиночные '<' и '>'.
+// чистки: иначе SanitizeText превратил бы одиночные '<' и '>' в пробелы.
 static std::wstring PrepareSegmentWide(
     std::wstring wtext,
     bool singleMode,
     const RuTtsParams& params,
     const std::unordered_map<std::wstring, std::wstring>& mapSingle,
-    const std::unordered_map<std::wstring, std::wstring>& mapChars,
+    const std::vector<std::pair<std::wstring, std::wstring>>& mapChars,
     const RulexClient& rulex,
     bool rulexReady)
 {
@@ -1002,6 +1149,53 @@ static std::wstring PrepareSegmentWide(
     }
     wtext = SanitizeText(std::move(wtext));
     return wtext;
+}
+
+// Журнал того, что присылает клиент: флаги, SetRate/SetVolume и состояние
+// каждого фрагмента. По нему видно, как хост задаёт скорость -- через SetRate,
+// через <rate> или обоими (JAWS шлёт <rate AbsSpeed> с каждой фразой).
+// Включается созданием пустого sapi_trace.log рядом с rutts.ini: конфигуратор
+// этот файл не трогает. Пишется только в существующий файл и не больше 4 МБ.
+static void TraceSpeak(DWORD flags, const WAVEFORMATEX* format, long siteRate, USHORT siteVolume,
+                       const SPVTEXTFRAG* frags) {
+    const std::wstring path = ParamReader::TracePath();
+    HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart > 4 * 1024 * 1024) {
+        CloseHandle(file);
+        return;
+    }
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t head[256];
+    swprintf(head, 256, L"%02u:%02u:%02u.%03u pid %lu flags 0x%lX %luHz/%ubit GetRate %ld GetVolume %u\r\n",
+             now.wHour, now.wMinute, now.wSecond, now.wMilliseconds, GetCurrentProcessId(),
+             static_cast<unsigned long>(flags), format ? format->nSamplesPerSec : 0ul,
+             format ? format->wBitsPerSample : 0u, siteRate, siteVolume);
+    std::wstring line = head;
+    for (const SPVTEXTFRAG* f = frags; f; f = f->pNext) {
+        wchar_t state[160];
+        swprintf(state, 160, L"  action %d rate %ld volume %lu pitch %ld/%ld silence %lu: ",
+                 static_cast<int>(f->State.eAction), f->State.RateAdj, f->State.Volume,
+                 f->State.PitchAdj.MiddleAdj, f->State.PitchAdj.RangeAdj, f->State.SilenceMSecs);
+        line += state;
+        if (f->pTextStart) line.append(f->pTextStart, (std::min)(f->ulTextLen, 200ul));
+        line += L"\r\n";
+    }
+
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    if (bytes > 0) {
+        std::string utf8(static_cast<size_t>(bytes), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, line.c_str(), static_cast<int>(line.size()),
+                            utf8.data(), bytes, nullptr, nullptr);
+        DWORD written = 0;
+        WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
+    }
+    CloseHandle(file);
 }
 
 RuTtsEngine::RuTtsEngine() { g_objectCount.fetch_add(1, std::memory_order_relaxed); }
@@ -1036,8 +1230,10 @@ ULONG RuTtsEngine::Release(){
 }
 
 HRESULT RuTtsEngine::SetObjectToken(ISpObjectToken* pToken){
-    if(m_token){ m_token->Release(); m_token=nullptr; }
-    if(pToken){ pToken->AddRef(); m_token = pToken; }
+    if (!pToken) return E_POINTER;
+    pToken->AddRef();
+    if(m_token) m_token->Release();
+    m_token = pToken;
     return S_OK;
 }
 
@@ -1107,21 +1303,12 @@ constexpr int kVoicePitchMax = 300;
 constexpr int kPitchAdjInputMin = -24;
 constexpr int kPitchAdjInputMax = 24;
 
-static long AbsLong(long v) {
-    return (v < 0) ? -v : v;
-}
+constexpr int kIntonationMin = 0;
+constexpr int kIntonationMax = 140;
 
-static long ReadPitchAdj(const SPVSTATE& state) {
-    const long middleAdj = static_cast<long>(state.PitchAdj.MiddleAdj);
-    const long rangeAdj = static_cast<long>(state.PitchAdj.RangeAdj);
-    if (middleAdj == 0) return rangeAdj;
-    if (rangeAdj == 0) return middleAdj;
-    if (AbsLong(rangeAdj) > AbsLong(middleAdj)) {
-        return rangeAdj;
-    }
-    return middleAdj;
-}
-
+// Высота голоса -- от MiddleAdj (<pitch absmiddle>), размах интонации -- от
+// RangeAdj (<pitch range>). Раньше оба шли в высоту (бралось большее по
+// модулю), и <pitch range> менял высоту вместо интонации.
 static int MapPitchAdjToVoicePitch(long rawPitchAdj) {
     const long raw = static_cast<long>(ClampInt(static_cast<int>(rawPitchAdj), kPitchAdjInputMin, kPitchAdjInputMax));
     const long rawOffset = raw - kPitchAdjInputMin;
@@ -1133,8 +1320,11 @@ static int MapPitchAdjToVoicePitch(long rawPitchAdj) {
         kVoicePitchMax);
 }
 
-static void ApplyPitchRawToConf(long rawPitchAdj, ru_tts_conf_t& conf) {
-    conf.voice_pitch = MapPitchAdjToVoicePitch(rawPitchAdj);
+// Скорость клиента плюс скорость фрагмента, обрезанные до шкалы SAPI. Так же
+// поступают и голоса Microsoft: <rate AbsSpeed> у них тоже прибавляется.
+static long CombineRateAdj(long baseAdj, long fragmentAdj) {
+    const long sum = NormalizeRateAdj(baseAdj) + NormalizeRateAdj(fragmentAdj);
+    return (sum < -10) ? -10 : (sum > 10) ? 10 : sum;
 }
 
 static void ApplyRateAdjToConf(long normalizedRateAdj, bool useRateBoost, ru_tts_conf_t& conf) {
@@ -1153,12 +1343,7 @@ static void ApplyRateAdjToConf(long normalizedRateAdj, bool useRateBoost, ru_tts
     conf.speech_rate = (v < kSpeechRateMin) ? kSpeechRateMin : v;
 }
 
-struct ru_tts_conf_ex_t {
-    ru_tts_conf_t base;
-    int samples_per_sec;
-};
-
-HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
+HRESULT RuTtsEngine::Speak(DWORD dwSpeakFlags, REFGUID formatId, const WAVEFORMATEX* format,
                            const SPVTEXTFRAG* frags, ISpTTSEngineSite* site)
 {
     if(!site) return E_POINTER;
@@ -1177,13 +1362,20 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
 
     const std::wstring iniPath = ParamReader::IniPath();
     auto mapSingle = ReadIniMap(iniPath, L"SingleCharacters");
-    auto mapChars  = ReadIniMap(iniPath, L"Characters");
+    const auto mapChars = SortCharMap(ReadIniMap(iniPath, L"Characters"));
+
+    // Пишем ровно в том формате, который хост выбрал в Speak: обычно это наш же
+    // GetOutputFormat, но SAPI вправе попросить и другой (частота, 8 бит).
+    if (formatId != SPDFID_WaveFormatEx || !format || format->wFormatTag != WAVE_FORMAT_PCM ||
+        format->nChannels != 1 || (format->wBitsPerSample != 8 && format->wBitsPerSample != 16) ||
+        format->nSamplesPerSec < 8000 || format->nSamplesPerSec > 192000)
+        return E_INVALIDARG;
 
     EngineContext ctx{};
     ctx.site = site;
     ctx.inRate = params.samples_per_sec;
-    ctx.outRate = params.output_sample_rate;
-    ctx.gainPercent = 100;
+    ctx.outRate = static_cast<int>(format->nSamplesPerSec);
+    ctx.outBits = format->wBitsPerSample;
     ctx.interpolationAlgorithm = ToSrcConverterType(params.interpolation_algorithm);
     ctx.inputFormat = CallbackInputFormat::Raw8BitBytes;
 
@@ -1213,20 +1405,6 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
 
     // --- Разбор фрагментов в упорядоченные сегменты --------------------------
     std::vector<SpeechSegment> segments;
-    long pitchAdjFromSpeechFrag = 0;
-    bool hasPitchAdjFromSpeechFrag = false;
-    auto consumePitchAdj = [&](const SPVSTATE& state) {
-        const long fragPitchAdj = ReadPitchAdj(state);
-        if (!hasPitchAdjFromSpeechFrag) {
-            pitchAdjFromSpeechFrag = fragPitchAdj;
-            hasPitchAdjFromSpeechFrag = true;
-            return;
-        }
-        // Одно значение высоты на всю фразу -- держим самое сильное ненулевое.
-        if (AbsLong(fragPitchAdj) > AbsLong(pitchAdjFromSpeechFrag)) {
-            pitchAdjFromSpeechFrag = fragPitchAdj;
-        }
-    };
 
     for (auto* f = frags; f; f = f->pNext) {
         // Пустая длина больше НЕ значит "пропустить фрагмент": у закладки и у
@@ -1241,14 +1419,12 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
         case SPVA_Speak:
         case SPVA_Pronounce:
             if (part.empty()) break;
-            consumePitchAdj(f->State);
-            AppendTextSegment(segments, part, false, f->ulTextSrcOffset);
+            AppendTextSegment(segments, part, false, VoiceStateOf(f->State), f->ulTextSrcOffset);
             break;
 
         case SPVA_SpellOut:
             if (part.empty()) break;
-            consumePitchAdj(f->State);
-            AppendTextSegment(segments, part, true, f->ulTextSrcOffset);
+            AppendTextSegment(segments, part, true, VoiceStateOf(f->State), f->ulTextSrcOffset);
             break;
 
         case SPVA_Bookmark:
@@ -1272,41 +1448,22 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
     if (segments.empty()) return done(S_OK);
     ApplySingleCharacterMode(segments);
 
-    // --- Единый conf на всю фразу --------------------------------------------
-    ru_tts_conf_ex_t confEx{};
-    m_api.config_init(&confEx.base);
-    ParamReader::ApplyToConf(params, confEx.base);
-    confEx.samples_per_sec = params.samples_per_sec;
+    // --- conf фразы; скорость, высота и громкость -- у каждого сегмента свои ---
+    ru_tts_conf_t conf{};
+    m_api.config_init(&conf);
+    ParamReader::ApplyToConf(params, conf);
+    // Скорость и интонация отсчитываются от настроек, а не от уже сдвинутых
+    // значений: иначе каждый сегмент складывался бы с предыдущим.
+    const int baseSpeechRate = conf.speech_rate;
+    const int baseIntonation = conf.intonation;
 
+    // Базовые значения клиента (SetVolume/SetRate). Не прочлись -- остаются
+    // нейтральными: состояние фрагментов всё равно применится.
     USHORT vol = 100;
-    if (FAILED(site->GetVolume(&vol))) {
-        ULONG v = frags ? frags->State.Volume : 100;
-        if (v > 100) v = 100;
-        vol = (USHORT)v;
-    }
-
+    if (SUCCEEDED(site->GetVolume(&vol))) ctx.baseVolume = ClampInt(static_cast<int>(vol), 0, 100);
     long rateAdj = 0;
-    if (FAILED(site->GetRate(&rateAdj))) {
-        rateAdj = frags ? frags->State.RateAdj : 0;
-    }
-    rateAdj = NormalizeRateAdj(rateAdj);
-
-    const long rawPitchAdj = hasPitchAdjFromSpeechFrag
-        ? pitchAdjFromSpeechFrag
-        : (frags ? ReadPitchAdj(frags->State) : 0);
-    ApplyPitchRawToConf(rawPitchAdj, confEx.base);
-
-    ctx.gainPercent = ClampInt(static_cast<int>(vol), 0, 100);
-
-    // Базовая скорость запоминается ДО первого применения: SPVES_RATE посреди
-    // фразы пересчитывает её ОТ НЕЁ ЖЕ, а не поверх уже сдвинутой -- иначе каждая
-    // перестройка складывалась бы с предыдущей.
-    const int baseSpeechRate = confEx.base.speech_rate;
-    auto applyRate = [&](long normalizedAdj) {
-        confEx.base.speech_rate = baseSpeechRate;
-        ApplyRateAdjToConf(normalizedAdj, params.use_rate_boost, confEx.base);
-    };
-    applyRate(rateAdj);
+    if (SUCCEEDED(site->GetRate(&rateAdj))) ctx.baseRateAdj = rateAdj;
+    TraceSpeak(dwSpeakFlags, format, rateAdj, vol, frags);
 
     const bool rulexReady = params.use_rulex && HasRulex();
     const size_t waveBufferSize =
@@ -1319,13 +1476,6 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
     // --- Проход по сегментам -------------------------------------------------
     for (const SpeechSegment& segment : segments) {
         if (!CheckSapiActions(&ctx)) return done(S_OK);
-
-        // Скорость, запрошенную посреди фразы, применяем на границе сегмента:
-        // внутри transfer conf трогать нельзя.
-        if (ctx.rateDirty) {
-            ctx.rateDirty = false;
-            applyRate(NormalizeRateAdj(ctx.pendingRateAdj));
-        }
 
         if (segment.kind == SpeechSegmentKind::Silence) {
             if (WriteSilenceMs(&ctx, segment.silenceMs) != 0) return done(S_OK);
@@ -1353,6 +1503,17 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
             continue;
         }
 
+        // Состояние голоса сегмента. Скорость берётся заново от текущей
+        // скорости клиента: SPVES_RATE посреди фразы задаёт её, а не прибавляет.
+        conf.speech_rate = baseSpeechRate;
+        ApplyRateAdjToConf(CombineRateAdj(ctx.baseRateAdj, segment.voice.rateAdj), params.use_rate_boost, conf);
+        conf.voice_pitch = MapPitchAdjToVoicePitch(segment.voice.pitchMiddle);
+        conf.intonation = MapNormalizedAdjToRange(
+            ClampInt(static_cast<int>(segment.voice.pitchRange), -10, 10),
+            baseIntonation, kIntonationMin, kIntonationMax);
+        ctx.segmentVolume = segment.voice.volume;
+        UpdateGain(&ctx);
+
         NormalizeForKoi8rInplace(prepared);
         std::string koi8 = WideToKoi8r(prepared);
         for (char& c : koi8) if (c == '\0') c = ' ';
@@ -1372,7 +1533,7 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
         if (holdForMarks) BeginCapture(&ctx);
 
         m_api.transfer(
-            reinterpret_cast<const ru_tts_conf_t*>(&confEx),
+            &conf,
             koi8.c_str(),
             waveBuf.data(),
             waveBuf.size(),
@@ -1380,10 +1541,11 @@ HRESULT RuTtsEngine::Speak(DWORD /*dwSpeakFlags*/, REFGUID, const WAVEFORMATEX*,
             &ctx);
         if (ctx.sapiStop) return done(S_OK);
 
-        // Досдать хвост ресемплера, чтобы звук сегмента был полон ДО измерения
-        // его длины и расстановки событий. src_reset внутри готовит конвертер к
-        // следующему сегменту.
+        // Досдать хвост ресемплера и погасить конец звука, чтобы звук сегмента
+        // был полон ДО измерения его длины и расстановки событий. src_reset
+        // внутри готовит конвертер к следующему сегменту.
         if (FlushResampler(&ctx) != 0) return done(S_OK);
+        if (FinishSound(&ctx) != 0) return done(S_OK);
         if (ctx.sapiStop) return done(S_OK);
 
         if (holdForMarks) {

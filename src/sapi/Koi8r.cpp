@@ -14,7 +14,7 @@ std::string WideToKoi8r(const std::wstring& ws)
     if (ws.empty())
         return {};
 
-    // WideCharToMultiByte ïğèíèìàåò äëèíó êàê int
+    // WideCharToMultiByte Ğ¿Ñ€Ğ¸Ğ½Ğ¸Ğ¼Ğ°ĞµÑ‚ Ğ´Ğ»Ğ¸Ğ½Ñƒ ĞºĞ°Ğº int
     if (ws.size() > static_cast<size_t>((std::numeric_limits<int>::max)()))
         return {};
 
